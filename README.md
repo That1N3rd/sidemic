@@ -1,3 +1,5 @@
+# THIS IS ENTIRELY VIBECODED FOR MYSELF
+
 # MicBridge
 
 Use your laptop's microphone on the PC you stream from with [Sunshine](https://github.com/LizardByte/Sunshine)
