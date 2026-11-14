@@ -1,0 +1,12 @@
+# build output
+csharp/bin/
+csharp/obj/
+csharp/dist/
+rust/target/
+rust/dist/
+
+# per-machine runtime files
+micbridge.json
+micbridge.log
+*.user
+.vs/
