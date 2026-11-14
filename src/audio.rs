@@ -13,11 +13,11 @@ pub fn find_capture(filter: &str) -> Result<Device> {
     if filter.trim().is_empty() {
         return host
             .default_input_device()
-            .ok_or_else(|| anyhow!("No default microphone. Plug one in or set micDevice in micbridge.json."));
+            .ok_or_else(|| anyhow!("No default microphone. Plug one in or set micDevice in sidemic.json."));
     }
     host.input_devices()?
         .find(|d| d.name().map(|n| contains_ci(&n, filter)).unwrap_or(false))
-        .ok_or_else(|| anyhow!("No microphone matches \"{filter}\". Run: micbridge devices"))
+        .ok_or_else(|| anyhow!("No microphone matches \"{filter}\". Run: sidemic devices"))
 }
 
 /// Host side: the playback endpoint whose audio comes back out of a virtual microphone.
@@ -30,7 +30,7 @@ pub fn find_virtual_mic_output(filter: &str) -> Result<Device> {
         return devices
             .into_iter()
             .find(|d| contains_ci(&name_of(d), filter))
-            .ok_or_else(|| anyhow!("No active playback device matches \"{filter}\". Run: micbridge devices"));
+            .ok_or_else(|| anyhow!("No active playback device matches \"{filter}\". Run: sidemic devices"));
     }
     for pref in ["CABLE Input", "Steam Streaming Microphone"] {
         if let Some(d) = devices.iter().find(|d| contains_ci(&name_of(d), pref)) {
@@ -39,8 +39,8 @@ pub fn find_virtual_mic_output(filter: &str) -> Result<Device> {
     }
     Err(anyhow!(
         "No virtual microphone found. Install VB-Cable (vb-audio.com/Cable), or enable \"Speakers (Steam Streaming Microphone)\" \
-         in mmsys.cpl > Playback (right-click > Show Disabled Devices) and the matching Recording device, then restart micbridge. \
-         Or set outputDevice in micbridge.json."
+         in mmsys.cpl > Playback (right-click > Show Disabled Devices) and the matching Recording device, then restart sidemic. \
+         Or set outputDevice in sidemic.json."
     ))
 }
 
@@ -172,4 +172,12 @@ mod tests {
         }
         assert!((consumed as i64 - 48000).abs() < 4, "consumed {consumed}");
     }
+}
+
+/// (microphone names, playback device names) for the settings window's dropdowns.
+pub fn device_names() -> (Vec<String>, Vec<String>) {
+    let host = cpal::default_host();
+    let mics = host.input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+    let outs = host.output_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+    (mics, outs)
 }

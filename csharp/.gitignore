@@ -1,6 +1,0 @@
-bin/
-obj/
-dist/
-*.user
-micbridge.json
-micbridge.log

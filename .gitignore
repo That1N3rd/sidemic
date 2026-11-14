@@ -1,12 +1,9 @@
 # build output
-csharp/bin/
-csharp/obj/
-csharp/dist/
-rust/target/
-rust/dist/
+target/
+dist/
 
 # per-machine runtime files
+sidemic.json
+sidemic.log
 micbridge.json
 micbridge.log
-*.user
-.vs/

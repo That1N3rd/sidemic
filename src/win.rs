@@ -91,7 +91,7 @@ pub fn pump_messages() {
 
 pub fn message_box(text: &str) {
     let t = wide(text);
-    let c = wide("MicBridge");
+    let c = wide("SideMic");
     unsafe {
         MessageBoxW(null_mut(), t.as_ptr(), c.as_ptr(), MB_OK | MB_ICONINFORMATION);
     }
@@ -100,7 +100,7 @@ pub fn message_box(text: &str) {
 /// Returns false if another instance already holds the named mutex. The handle is intentionally leaked
 /// so the mutex lives as long as the process.
 pub fn claim_single_instance(name: &str) -> bool {
-    let n = wide(&format!("Local\\MicBridge.{name}"));
+    let n = wide(&format!("Local\\SideMic.{name}"));
     unsafe {
         let h = CreateMutexW(null(), 0, n.as_ptr());
         if h.is_null() {
@@ -129,7 +129,7 @@ pub fn set_clipboard(text: &str) -> bool {
 pub fn add_firewall_rule(port: u16) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let args = format!(
-        "advfirewall firewall add rule name=\"MicBridge (UDP {port})\" dir=in action=allow protocol=UDP localport={port} program=\"{}\"",
+        "advfirewall firewall add rule name=\"SideMic (UDP {port})\" dir=in action=allow protocol=UDP localport={port} program=\"{}\"",
         exe.display()
     );
     let script = format!(
@@ -146,7 +146,7 @@ pub fn add_firewall_rule(port: u16) -> Result<(), String> {
 /// Creates or removes a shortcut in the user's Startup folder.
 pub fn set_autostart(enable: bool) -> Result<String, String> {
     let appdata = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let lnk = format!("{appdata}\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\MicBridge.lnk");
+    let lnk = format!("{appdata}\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\SideMic.lnk");
     if !enable {
         let _ = std::fs::remove_file(&lnk);
         return Ok(lnk);
@@ -154,8 +154,8 @@ pub fn set_autostart(enable: bool) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().map(|p| p.display().to_string()).unwrap_or_default();
     let script = format!(
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}'); $s.TargetPath = '{exe}'; $s.Arguments = ''; \
-         $s.WorkingDirectory = '{dir}'; $s.IconLocation = '{exe},0'; $s.Description = 'MicBridge - microphone passthrough for game streaming'; $s.Save()",
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}'); $s.TargetPath = '{exe}'; $s.Arguments = '--minimized'; \
+         $s.WorkingDirectory = '{dir}'; $s.IconLocation = '{exe},0'; $s.Description = 'SideMic - microphone passthrough for game streaming'; $s.Save()",
         exe = exe.display()
     );
     match powershell(&script) {
@@ -163,4 +163,11 @@ pub fn set_autostart(enable: bool) -> Result<String, String> {
         Ok(s) => Err(format!("powershell exited with code {}", s.code().unwrap_or(-1))),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// True if the Startup-folder shortcut exists.
+pub fn autostart_enabled() -> bool {
+    std::env::var("APPDATA")
+        .map(|a| std::path::Path::new(&format!(r"{a}\Microsoft\Windows\Start Menu\Programs\Startup\SideMic.lnk")).exists())
+        .unwrap_or(false)
 }

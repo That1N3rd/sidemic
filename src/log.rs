@@ -1,4 +1,4 @@
-//! Tiny thread-safe logger: console (when enabled) + micbridge.log + an in-memory tail.
+//! Tiny thread-safe logger: console (when enabled) + sidemic.log + an in-memory tail.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};

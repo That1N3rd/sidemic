@@ -1,4 +1,4 @@
-//! micbridge.json. Same schema as the C# version, so the two can share a config file.
+//! sidemic.json. Same schema as the C# version, so the two can share a config file.
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -53,7 +53,7 @@ impl Default for Config {
     }
 }
 
-/// Directory for config + log: next to the exe if writable, else %LOCALAPPDATA%\MicBridge.
+/// Directory for config + log: next to the exe if writable, else %LOCALAPPDATA%\SideMic.
 pub fn data_dir() -> PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -65,13 +65,17 @@ pub fn data_dir() -> PathBuf {
         return exe_dir;
     }
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or(exe_dir);
-    let dir = base.join("MicBridge");
+    let dir = base.join("SideMic");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
 pub fn default_path() -> PathBuf {
-    data_dir().join("micbridge.json")
+    let dir = data_dir();
+    let p = dir.join("sidemic.json");
+    // Older builds were called MicBridge; keep reading their config until the user saves under the new name.
+    let legacy = dir.join("micbridge.json");
+    if !p.exists() && legacy.exists() { legacy } else { p }
 }
 
 impl Config {

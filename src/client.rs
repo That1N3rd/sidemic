@@ -62,7 +62,7 @@ impl Client {
     pub fn start(cfg: Config) -> Result<Arc<Client>> {
         let key = cfg.key_bytes()?;
         if cfg.host.trim().is_empty() {
-            return Err(anyhow!("No host set. Run: micbridge client --host <host-ip> --key <key>"));
+            return Err(anyhow!("No host set. Run: sidemic client --host <host-ip> --key <key>"));
         }
         let target = resolve(&cfg.host, cfg.port)?;
         let bind: SocketAddr = if target.is_ipv6() { "[::]:0".parse().unwrap() } else { "0.0.0.0:0".parse().unwrap() };
