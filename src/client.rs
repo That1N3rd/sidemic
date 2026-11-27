@@ -4,7 +4,7 @@
 use crate::audio::{self, PushResampler};
 use crate::config::Config;
 use crate::protocol::{self, Opener, Sealer};
-use crate::{log, win};
+use crate::{log, platform};
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
@@ -25,6 +25,8 @@ pub struct Client {
     stop: AtomicBool,
     muted: AtomicBool,
     active: AtomicBool,
+    /// The mic has delivered nothing but exact zeros for a few seconds: almost always a denied mic permission.
+    silent: AtomicBool,
     mic_name: Mutex<String>,
     last_error: Mutex<String>,
     last_pong: Mutex<Option<Instant>>,
@@ -82,6 +84,7 @@ impl Client {
             sealer: Mutex::new(Sealer::new(&key)),
             stop: AtomicBool::new(false),
             active: AtomicBool::new(false),
+            silent: AtomicBool::new(false),
             mic_name: Mutex::new(String::new()),
             last_error: Mutex::new(String::new()),
             last_pong: Mutex::new(None),
@@ -124,13 +127,19 @@ impl Client {
         }
         if !self.active.load(Ordering::Relaxed) {
             return if self.cfg.follow_moonlight {
-                format!("Idle - waiting for {}.exe", self.cfg.moonlight_process)
+                format!("Idle - waiting for {}{}", self.cfg.moonlight_process, platform::EXE_SUFFIX)
             } else {
                 "Idle".into()
             };
         }
         let link = if self.connected() { "connected" } else { "no reply from host yet" };
-        let tail = if self.muted() { ", MUTED".to_string() } else { format!(", {} kbps", self.kbps.load(Ordering::Relaxed)) };
+        let tail = if self.muted() {
+            ", MUTED".to_string()
+        } else if self.silent.load(Ordering::Relaxed) {
+            format!(", mic is silent: {}", platform::MIC_PERMISSION_HINT)
+        } else {
+            format!(", {} kbps", self.kbps.load(Ordering::Relaxed))
+        };
         format!("Sending {} to {} ({link}{tail})", self.mic_name.lock().unwrap(), self.target)
     }
 
@@ -151,7 +160,7 @@ impl Client {
         let mut seen = false; // last known answer from the process list
         let mut misses = 0u32; // consecutive polls without the process; stop only after two
         while !self.stop.load(Ordering::SeqCst) {
-            if let Some(now) = win::process_running(&self.cfg.moonlight_process) {
+            if let Some(now) = platform::process_running(&self.cfg.moonlight_process) {
                 seen = now;
             }
             misses = if seen { 0 } else { misses + 1 };
@@ -236,6 +245,10 @@ impl Client {
         let mut opus_buf = [0u8; 1275];
         let mut last_ping = Instant::now() - Duration::from_secs(1);
         let threshold = FRAME + FRAME / 2; // 30 ms of audio queued before we encode
+        // A real microphone always has some noise floor. Exact zeros for 3 s means the OS is feeding us silence,
+        // which is what macOS (and Windows) do when the app has no microphone permission.
+        let mut zero_frames = 0u32;
+        self.silent.store(false, Ordering::Relaxed);
 
         while running.load(Ordering::SeqCst) {
             {
@@ -257,6 +270,19 @@ impl Client {
                 for s in frame.iter_mut() {
                     *s = q.pop_front().unwrap_or(0.0);
                 }
+            }
+            if frame.iter().all(|&s| s == 0.0) {
+                zero_frames = zero_frames.saturating_add(1);
+                if zero_frames == 150 {
+                    self.silent.store(true, Ordering::Relaxed);
+                    log::warn(format!("Microphone delivers pure silence - {}", platform::MIC_PERMISSION_HINT));
+                }
+            } else if zero_frames > 0 {
+                if zero_frames >= 150 {
+                    log::info("Microphone signal is back");
+                }
+                zero_frames = 0;
+                self.silent.store(false, Ordering::Relaxed);
             }
             if self.muted() {
                 if last_ping.elapsed() >= Duration::from_millis(500) {

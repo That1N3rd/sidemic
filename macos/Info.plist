@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>SideMic</string>
+    <key>CFBundleDisplayName</key>
+    <string>SideMic</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.that1n3rd.sidemic</string>
+    <key>CFBundleExecutable</key>
+    <string>sidemic</string>
+    <key>CFBundleIconFile</key>
+    <string>SideMic</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <!-- Menu-bar app: no Dock icon until the settings window is open (SideMic switches it on and off itself). -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Without this macOS never shows the permission prompt and the app only ever hears silence. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SideMic sends your microphone to the PC you are streaming from.</string>
+    <!-- macOS 15+ asks before an app may talk to devices on the local network, like the streamed PC. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SideMic sends your microphone to the streamed PC on your network.</string>
+</dict>
+</plist>

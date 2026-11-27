@@ -1,9 +1,15 @@
 //! The settings window (egui). Opened on demand from the tray; closing it keeps SideMic running.
+//!
+//! Windows: each time the window opens, `run_window` runs eframe until the window closes, then returns to the
+//! tray's own message loop.
+//! macOS: `run_app` runs eframe once for the whole life of the app and the window is only ever hidden. AppKit
+//! has a single application run loop that winit owns, and the menu-bar icon needs that loop running all the
+//! time, so handing control back and forth (as on Windows) would leave the icon dead while the window is shut.
 
 use crate::config::Config;
 use crate::state::Shared;
 use crate::tray::{self, Tray};
-use crate::{audio, log, win};
+use crate::{audio, log, platform};
 use eframe::egui::{self, Color32, RichText};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -11,9 +17,33 @@ use std::time::Duration;
 
 pub const AUTO: &str = "(automatic)";
 
+/// The tray is borrowed from main() on Windows, and created and owned by the window on macOS.
+enum TrayRef<'a> {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Borrowed(&'a mut Tray),
+    #[cfg_attr(windows, allow(dead_code))]
+    Owned(Box<Tray>),
+}
+
+impl TrayRef<'_> {
+    fn poll(&mut self) {
+        match self {
+            TrayRef::Borrowed(t) => t.poll(),
+            TrayRef::Owned(t) => t.poll(),
+        }
+    }
+}
+
 struct App<'a> {
     shared: Arc<Shared>,
-    tray: &'a mut Tray,
+    tray: TrayRef<'a>,
+    /// macOS: frames left during which to keep the window hidden at startup (eframe shows the window after it
+    /// paints the first frame, so a single Visible(false) is not enough).
+    #[cfg_attr(windows, allow(dead_code))]
+    hide_frames: u8,
+    /// macOS: run the "window appeared" hook on the first frame.
+    #[cfg_attr(windows, allow(dead_code))]
+    first_frame: bool,
     cfg: Config,
     mics: Vec<String>,
     outputs: Vec<String>,
@@ -24,19 +54,41 @@ struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    fn new(shared: Arc<Shared>, tray: &'a mut Tray) -> Self {
+    fn new(shared: Arc<Shared>, tray: TrayRef<'a>, start_hidden: bool) -> Self {
         let cfg = shared.cfg.lock().unwrap().clone();
         let (mics, outputs) = audio::device_names();
         App {
             shared,
             tray,
+            hide_frames: if start_hidden { 5 } else { 0 },
+            first_frame: !start_hidden,
             cfg,
             mics,
             outputs,
             show_key: false,
-            autostart: win::autostart_enabled(),
+            autostart: platform::autostart_enabled(),
             notice: String::new(),
             notice_is_error: false,
+        }
+    }
+
+    /// Re-reads settings and devices, as if the window had just been opened (Windows rebuilds `App` each time).
+    #[cfg_attr(windows, allow(dead_code))]
+    fn refresh(&mut self) {
+        self.cfg = self.shared.cfg.lock().unwrap().clone();
+        let (m, o) = audio::device_names();
+        self.mics = m;
+        self.outputs = o;
+        self.autostart = platform::autostart_enabled();
+    }
+
+    /// "Close" the window: really close it on Windows, hide it on macOS.
+    fn hide(&mut self, ctx: &egui::Context) {
+        if cfg!(target_os = "macos") {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            platform::on_window_hidden();
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -133,17 +185,16 @@ impl<'a> App<'a> {
             ui.end_row();
 
             ui.label("Firewall");
-            if ui.button("Allow UDP port through Windows Firewall").clicked() {
-                match win::add_firewall_rule(self.cfg.port) {
-                    Ok(()) => self.set_notice(format!("Firewall rule added for UDP {}.", self.cfg.port), false),
+            if ui.button(platform::FIREWALL_LABEL).clicked() {
+                match platform::add_firewall_rule(self.cfg.port) {
+                    Ok(()) => self.set_notice(format!("Firewall now lets SideMic receive on UDP {}.", self.cfg.port), false),
                     Err(e) => self.set_notice(format!("Firewall: {e}"), true),
                 }
             }
             ui.end_row();
         });
         ui.add_space(4.0);
-        ui.label(RichText::new("Install VB-Cable once (vb-audio.com/Cable), then pick \"CABLE Output\" as the microphone in your game. \
-            \"(automatic)\" finds VB-Cable or the Steam Streaming Microphone by itself.").small().weak());
+        ui.label(RichText::new(HOST_HINT).small().weak());
     }
 
     fn client_section(&mut self, ui: &mut egui::Ui) {
@@ -187,7 +238,7 @@ impl<'a> App<'a> {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.cfg.follow_moonlight, "Only while this process is running:");
                 ui.add_enabled(self.cfg.follow_moonlight, egui::TextEdit::singleline(&mut self.cfg.moonlight_process).desired_width(120.0));
-                ui.label(".exe");
+                ui.label(platform::EXE_SUFFIX);
             });
             ui.end_row();
 
@@ -209,8 +260,32 @@ impl<'a> App<'a> {
 impl eframe::App for App<'_> {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tray.poll();
-        if self.shared.exit.load(Ordering::SeqCst) {
+        let exiting = self.shared.exit.load(Ordering::SeqCst);
+        if exiting {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if self.hide_frames > 0 {
+                self.hide_frames -= 1;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                platform::on_window_hidden();
+            } else if std::mem::take(&mut self.first_frame) {
+                platform::on_window_shown();
+            }
+            // The red close button (or Cmd+W) hides the window; only Quit in the menu-bar menu ends the app.
+            if !exiting && ctx.input(|i| i.viewport().close_requested()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.hide(ctx);
+            }
+            if self.shared.show_window.swap(false, Ordering::SeqCst) {
+                self.hide_frames = 0;
+                self.first_frame = false;
+                self.refresh();
+                platform::on_window_shown();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
         }
         ctx.request_repaint_after(Duration::from_millis(250));
     }
@@ -227,7 +302,7 @@ impl eframe::App for App<'_> {
                 ui.add_space(8.0);
                 let color = if !running {
                     Color32::GRAY
-                } else if status.starts_with("Error") || status.contains("no reply") {
+                } else if status.starts_with("Error") || status.contains("no reply") || status.contains("silent") {
                     Color32::from_rgb(230, 160, 30)
                 } else if status.starts_with("Receiving") || status.contains("connected") {
                     Color32::from_rgb(60, 180, 90)
@@ -263,9 +338,10 @@ impl eframe::App for App<'_> {
                     self.set_notice("Settings saved.", false);
                 }
                 ui.separator();
-                if ui.checkbox(&mut self.autostart, "Start with Windows").changed() {
-                    match win::set_autostart(self.autostart) {
-                        Ok(_) => self.set_notice(if self.autostart { "SideMic will start with Windows (in the tray)." } else { "Removed from Windows startup." }, false),
+                if ui.checkbox(&mut self.autostart, platform::AUTOSTART_LABEL).changed() {
+                    match platform::set_autostart(self.autostart) {
+                        Ok(_) if self.autostart => self.set_notice(format!("SideMic will start at login (in the {}).", platform::TRAY_NAME), false),
+                        Ok(_) => self.set_notice("SideMic will no longer start at login.", false),
                         Err(e) => {
                             self.autostart = !self.autostart;
                             self.set_notice(format!("Autostart: {e}"), true);
@@ -274,14 +350,14 @@ impl eframe::App for App<'_> {
                 }
                 if ui.button("Open log").clicked() {
                     if let Some(p) = log::file_path() {
-                        win::open_path(&p.display().to_string());
+                        platform::open_path(&p.display().to_string());
                     }
                 }
-                if ui.button("Hide to tray").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if ui.button(format!("Hide to {}", platform::TRAY_NAME)).clicked() {
+                    self.hide(&ctx);
                 }
             });
-            ui.label(RichText::new("Closing this window keeps SideMic running in the system tray. Use the tray menu's Exit to quit.").small().weak());
+            ui.label(RichText::new(CLOSE_HINT).small().weak());
             ui.add_space(4.0);
         });
 
@@ -309,11 +385,21 @@ impl eframe::App for App<'_> {
     }
 }
 
-/// Opens the settings window and blocks until it is closed. The tray keeps working meanwhile.
-pub fn run_window(shared: Arc<Shared>, tray: &mut Tray) {
-    shared.show_window.store(false, Ordering::SeqCst);
+#[cfg(windows)]
+const HOST_HINT: &str = "Install VB-Cable once (vb-audio.com/Cable), then pick \"CABLE Output\" as the microphone in your game. \
+    \"(automatic)\" finds VB-Cable or the Steam Streaming Microphone by itself.";
+#[cfg(target_os = "macos")]
+const HOST_HINT: &str = "Install BlackHole 2ch once (existential.audio/blackhole), then pick \"BlackHole 2ch\" as the microphone \
+    in your app. \"(automatic)\" finds BlackHole by itself.";
+
+#[cfg(windows)]
+const CLOSE_HINT: &str = "Closing this window keeps SideMic running in the system tray. Use the tray menu's Exit to quit.";
+#[cfg(target_os = "macos")]
+const CLOSE_HINT: &str = "Closing this window keeps SideMic running in the menu bar. Use Quit SideMic in its menu to quit.";
+
+fn native_options() -> eframe::NativeOptions {
     let icon = egui::IconData { rgba: tray::icon_rgba(64), width: 64, height: 64 };
-    let options = eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SideMic")
             .with_inner_size([640.0, 520.0])
@@ -323,19 +409,51 @@ pub fn run_window(shared: Arc<Shared>, tray: &mut Tray) {
         run_and_return: true,
         centered: true,
         ..Default::default()
-    };
+    }
+}
+
+/// Windows: opens the settings window and blocks until it is closed. The tray keeps working meanwhile.
+#[cfg(windows)]
+pub fn run_window(shared: Arc<Shared>, tray: &mut Tray) {
+    shared.show_window.store(false, Ordering::SeqCst);
     let shared2 = shared.clone();
     let result = eframe::run_native(
         "SideMic",
-        options,
+        native_options(),
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
             shared2.set_waker(move || ctx.request_repaint());
-            Ok(Box::new(App::new(shared2.clone(), tray)))
+            Ok(Box::new(App::new(shared2.clone(), TrayRef::Borrowed(tray), false)))
         }),
     );
     if let Err(e) = result {
         log::error(format!("Settings window failed: {e}"));
-        win::message_box(&format!("The settings window could not be opened:\n\n{e}\n\nSideMic keeps running in the tray; use sidemic.json or the command line to configure it."));
+        platform::message_box(&format!("The settings window could not be opened:\n\n{e}\n\nSideMic keeps running in the tray; use sidemic.json or the command line to configure it."));
+    }
+}
+
+/// macOS: runs the whole app (window + menu-bar icon) until Quit. Returns false if it could not start.
+#[cfg(target_os = "macos")]
+pub fn run_app(shared: Arc<Shared>, start_hidden: bool) -> bool {
+    shared.show_window.store(false, Ordering::SeqCst);
+    let shared2 = shared.clone();
+    let result = eframe::run_native(
+        "SideMic",
+        native_options(),
+        Box::new(move |cc| {
+            let ctx = cc.egui_ctx.clone();
+            shared2.set_waker(move || ctx.request_repaint());
+            // The menu-bar icon has to be created once AppKit's run loop is up, which is the case by now.
+            let tray = Tray::new(shared2.clone()).ok_or("could not create the menu-bar icon")?;
+            Ok(Box::new(App::new(shared2.clone(), TrayRef::Owned(Box::new(tray)), start_hidden)))
+        }),
+    );
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            log::error(format!("SideMic window failed: {e}"));
+            platform::message_box(&format!("SideMic could not open its window:\n\n{e}\n\nThe command line still works: sidemic help"));
+            false
+        }
     }
 }
