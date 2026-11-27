@@ -8,6 +8,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# rustup only puts cargo on PATH for shells opened after it was installed; pick it up anyway.
+if ! command -v cargo >/dev/null && [[ -f "$HOME/.cargo/env" ]]; then
+    . "$HOME/.cargo/env"
+fi
+command -v cargo >/dev/null || { echo "cargo not found. Install Rust from https://rustup.rs first."; exit 1; }
+
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 if [[ "${1:-}" == "--universal" ]]; then
