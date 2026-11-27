@@ -1,8 +1,9 @@
 #!/bin/bash
 # Builds SideMic.app in target/release (or target/universal with --universal).
 #
-#   macos/build-app.sh               app for this Mac's CPU
-#   macos/build-app.sh --universal   one app for Apple silicon and Intel Macs
+#   macos/build-app.sh                     app for this Mac's CPU
+#   macos/build-app.sh --universal         one app for Apple silicon and Intel Macs
+#   macos/build-app.sh --universal --dmg   ...plus SideMic-<version>.dmg next to it, for GitHub releases
 #
 # Needs: Xcode command line tools (xcode-select --install), Rust (rustup.rs), CMake (brew install cmake).
 set -euo pipefail
@@ -16,7 +17,17 @@ command -v cargo >/dev/null || { echo "cargo not found. Install Rust from https:
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
-if [[ "${1:-}" == "--universal" ]]; then
+universal=0
+dmg=0
+for arg in "$@"; do
+    case "$arg" in
+        --universal) universal=1 ;;
+        --dmg) dmg=1 ;;
+        *) echo "unknown option: $arg"; exit 2 ;;
+    esac
+done
+
+if [[ $universal == 1 ]]; then
     rustup target add aarch64-apple-darwin x86_64-apple-darwin
     cargo build --release --target aarch64-apple-darwin
     cargo build --release --target x86_64-apple-darwin
@@ -49,4 +60,16 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/SideMic.icns" || echo "w
 codesign --force --deep --sign - "$app"
 
 echo "Built $app"
-echo "Copy it to /Applications, then open it."
+
+if [[ $dmg == 1 ]]; then
+    # The usual drag-to-install disk image: the app plus a shortcut to /Applications.
+    staging=$(mktemp -d)
+    cp -R "$app" "$staging/"
+    ln -s /Applications "$staging/Applications"
+    image="$out/SideMic-$version.dmg"
+    hdiutil create -volname "SideMic $version" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$image" >/dev/null
+    rm -rf "$staging"
+    echo "Built $image"
+fi
+
+echo "Copy SideMic.app to /Applications, then open it."

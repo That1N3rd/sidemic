@@ -1,13 +1,18 @@
 name: build
 
+# Every push builds both platforms and keeps the results as downloadable artifacts.
+# Pushing a tag like v0.3.0 also publishes them as a GitHub release.
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -15,8 +20,8 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - name: Unit tests
         run: cargo test
-      - name: Build SideMic.app (universal)
-        run: macos/build-app.sh --universal
+      - name: Build SideMic.app + DMG (universal)
+        run: macos/build-app.sh --universal --dmg
       - name: Smoke test
         run: |
           app=target/universal/SideMic.app
@@ -25,12 +30,16 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
           "$app/Contents/MacOS/sidemic" help
           "$app/Contents/MacOS/sidemic" devices
-      - name: Zip
-        run: ditto -c -k --keepParent target/universal/SideMic.app SideMic-macos.zip
+          hdiutil verify target/universal/SideMic-*.dmg
+      - name: Collect
+        run: |
+          mkdir dist
+          cp target/universal/SideMic-*.dmg dist/
+          ditto -c -k --keepParent target/universal/SideMic.app dist/SideMic-macos.zip
       - uses: actions/upload-artifact@v4
         with:
           name: SideMic-macos
-          path: SideMic-macos.zip
+          path: dist/*
 
   windows:
     runs-on: windows-latest
@@ -45,3 +54,19 @@ jobs:
         with:
           name: SideMic-windows
           path: target/release/sidemic.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

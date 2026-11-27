@@ -9,6 +9,8 @@ mod config;
 mod gui;
 mod host;
 mod log;
+#[cfg(target_os = "macos")]
+mod menubar_icon;
 mod protocol;
 mod state;
 mod tray;

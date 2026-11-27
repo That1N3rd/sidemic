@@ -52,17 +52,6 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     rgba
 }
 
-/// Black microphone on transparent, for the macOS menu bar. Marked as a template image, so macOS recolours it
-/// for light/dark menu bars like every other menu-bar icon.
-#[cfg(target_os = "macos")]
-fn template_rgba(size: u32) -> Vec<u8> {
-    // Reuse the coloured glyph: its white pixels are the microphone shape.
-    icon_rgba(size)
-        .chunks_exact(4)
-        .flat_map(|p| if p == [255, 255, 255, 255] { [0, 0, 0, 255] } else { [0, 0, 0, 0] })
-        .collect()
-}
-
 #[cfg(windows)]
 fn load_icon() -> Icon {
     if let Ok(i) = Icon::from_resource(1, Some((32, 32))) {
@@ -71,19 +60,16 @@ fn load_icon() -> Icon {
     Icon::from_rgba(icon_rgba(32), 32, 32).expect("fallback icon")
 }
 
+/// Menu-bar icon: thin outlined mic (slashed while muted), as a template image macOS recolours itself.
+/// 36 px = the 18 pt menu-bar height on a Retina screen.
+#[cfg(target_os = "macos")]
+fn load_icon_state(muted: bool) -> Icon {
+    Icon::from_rgba(crate::menubar_icon::rgba(36, muted), 36, 36).expect("menu bar icon")
+}
+
 #[cfg(target_os = "macos")]
 fn load_icon() -> Icon {
-    // 36 px = 18 pt menu-bar height on a Retina screen. The glyph is drawn larger than the disc it normally sits
-    // in, so scale it up by rendering at a bigger size and cropping the middle.
-    let (big, out) = (54u32, 36u32);
-    let src = template_rgba(big);
-    let off = (big - out) / 2;
-    let mut rgba = Vec::with_capacity((out * out * 4) as usize);
-    for y in 0..out {
-        let row = ((y + off) * big + off) as usize * 4;
-        rgba.extend_from_slice(&src[row..row + out as usize * 4]);
-    }
-    Icon::from_rgba(rgba, out, out).expect("menu bar icon")
+    load_icon_state(false)
 }
 
 pub struct Tray {
@@ -98,6 +84,9 @@ pub struct Tray {
     exit_item: MenuItem,
     menu_rx: Receiver<MenuEvent>,
     tray_rx: Receiver<TrayIconEvent>,
+    /// macOS: whether the menu-bar icon currently shows the muted (slashed) mic.
+    #[cfg_attr(windows, allow(dead_code))]
+    icon_muted: bool,
     last_tick: Instant,
 }
 
@@ -158,6 +147,7 @@ impl Tray {
             exit_item,
             menu_rx,
             tray_rx,
+            icon_muted: false,
             last_tick: Instant::now() - Duration::from_secs(2),
         })
     }
@@ -186,6 +176,7 @@ impl Tray {
                 }
             } else if ev.id() == self.mute_item.id() {
                 shared.set_muted(self.mute_item.is_checked());
+                self.last_tick = Instant::now() - Duration::from_secs(2); // update the icon right away
             }
         }
         while let Ok(ev) = self.tray_rx.try_recv() {
@@ -204,6 +195,14 @@ impl Tray {
                 self.mute_item.set_checked(shared.muted());
             }
             self.key_item.set_enabled(!shared.pairing_key().is_empty());
+            #[cfg(target_os = "macos")]
+            {
+                let muted = client && shared.muted();
+                if muted != self.icon_muted {
+                    self.icon_muted = muted;
+                    let _ = self._tray.set_icon_templated(Some(load_icon_state(muted)));
+                }
+            }
         }
     }
 

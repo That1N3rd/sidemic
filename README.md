@@ -65,8 +65,9 @@ the tray menu.
 
 The Mac is normally the **laptop (client)**; the streamed PC stays the Windows host above.
 
-1. Get `SideMic.app`: either build it (see [Building on macOS](#on-macos)), or download `SideMic-macos.zip` from the
-   [build workflow](../../actions/workflows/build.yml) artifacts or Releases and unzip it. Move it to `/Applications`.
+1. Download `SideMic-<version>.dmg` from [Releases](../../releases) (or from the latest
+   [build workflow](../../actions/workflows/build.yml) run), open it and drag SideMic into Applications. Or build it
+   yourself, see [Building on macOS](#on-macos).
 2. Open it. A downloaded copy is not notarized by Apple, so the first launch is blocked: open **System Settings >
    Privacy & Security**, scroll down and click **Open Anyway** (or run `xattr -dr com.apple.quarantine
    /Applications/SideMic.app` once). A copy you built yourself opens straight away.
@@ -76,7 +77,7 @@ The Mac is normally the **laptop (client)**; the streamed PC stays the Windows h
    find devices on your **local network**. Allow both. If you clicked *Don't Allow*, turn SideMic back on under
    System Settings > Privacy & Security > Microphone / Local Network.
 
-SideMic shows up as a microphone icon in the menu bar; click it for the menu (mute, open the window, quit). While
+SideMic shows up as a microphone icon in the menu bar (crossed out while muted); click it for the menu (mute, open the window, quit). While
 the window is open it also has a Dock icon. Closing the window keeps SideMic in the menu bar.
 
 If the status says *mic is silent*, macOS is feeding SideMic silence because the microphone permission is off.
@@ -167,6 +168,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 brew install cmake
 macos/build-app.sh              # target/release/SideMic.app for this Mac
 macos/build-app.sh --universal  # target/universal/SideMic.app for Apple silicon + Intel
+macos/build-app.sh --universal --dmg   # ...and target/universal/SideMic-<version>.dmg
 ```
 
 The script runs `cargo build --release`, wraps the binary in an app bundle with `macos/Info.plist` (the
@@ -174,7 +176,8 @@ microphone and local-network prompts only appear for a bundle that explains why 
 it. Every rebuild gets a new signature, so macOS may ask for the microphone again after you rebuild.
 
 Every push also builds both platforms on GitHub Actions (`.github/workflows/build.yml`) and keeps
-`SideMic-macos.zip` and `sidemic.exe` as downloadable artifacts.
+the DMG, `SideMic-macos.zip` and `sidemic.exe` as downloadable artifacts. Pushing a tag such as `v0.3.0` also
+publishes them as a GitHub release.
 
 ### Code layout
 
