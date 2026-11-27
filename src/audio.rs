@@ -21,7 +21,8 @@ pub fn find_capture(filter: &str) -> Result<Device> {
 }
 
 /// Host side: the playback endpoint whose audio comes back out of a virtual microphone.
-/// Auto order: VB-Cable ("CABLE Input"), then Steam Streaming Microphone ("Speakers (Steam Streaming Microphone)").
+/// Auto order: VB-Cable ("CABLE Input"), then Steam Streaming Microphone ("Speakers (Steam Streaming Microphone)"),
+/// then BlackHole (the usual loopback driver on macOS; its input and output share one name).
 pub fn find_virtual_mic_output(filter: &str) -> Result<Device> {
     let host = cpal::default_host();
     let devices: Vec<Device> = host.output_devices()?.collect();
@@ -32,17 +33,21 @@ pub fn find_virtual_mic_output(filter: &str) -> Result<Device> {
             .find(|d| contains_ci(&name_of(d), filter))
             .ok_or_else(|| anyhow!("No active playback device matches \"{filter}\". Run: sidemic devices"));
     }
-    for pref in ["CABLE Input", "Steam Streaming Microphone"] {
+    for pref in ["CABLE Input", "Steam Streaming Microphone", "BlackHole"] {
         if let Some(d) = devices.iter().find(|d| contains_ci(&name_of(d), pref)) {
             return Ok(d.clone());
         }
     }
-    Err(anyhow!(
-        "No virtual microphone found. Install VB-Cable (vb-audio.com/Cable), or enable \"Speakers (Steam Streaming Microphone)\" \
-         in mmsys.cpl > Playback (right-click > Show Disabled Devices) and the matching Recording device, then restart sidemic. \
-         Or set outputDevice in sidemic.json."
-    ))
+    Err(anyhow!(NO_VIRTUAL_MIC))
 }
+
+#[cfg(windows)]
+const NO_VIRTUAL_MIC: &str = "No virtual microphone found. Install VB-Cable (vb-audio.com/Cable), or enable \"Speakers (Steam Streaming Microphone)\" \
+     in mmsys.cpl > Playback (right-click > Show Disabled Devices) and the matching Recording device, then restart sidemic. \
+     Or set outputDevice in sidemic.json.";
+#[cfg(not(windows))]
+const NO_VIRTUAL_MIC: &str = "No virtual microphone found. Install BlackHole 2ch (existential.audio/blackhole, or `brew install blackhole-2ch`), \
+     then restart sidemic. Or set outputDevice in sidemic.json.";
 
 pub fn describe() -> String {
     let host = cpal::default_host();
@@ -73,7 +78,9 @@ pub fn describe() -> String {
             out.push_str(&format!("  {n}{mark}  [{fmt}]\n"));
         }
     }
-    out.push_str("(Only enabled devices are listed. Disabled ones show up in mmsys.cpl > Show Disabled Devices.)\n");
+    if cfg!(windows) {
+        out.push_str("(Only enabled devices are listed. Disabled ones show up in mmsys.cpl > Show Disabled Devices.)\n");
+    }
     out
 }
 

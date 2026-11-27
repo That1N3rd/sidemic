@@ -1,6 +1,6 @@
 [package]
 name = "sidemic"
-description = "Microphone passthrough sidecar for Sunshine/Apollo + Moonlight"
+description = "Microphone passthrough sidecar for Sunshine/Apollo + Moonlight (Windows and macOS)"
 license = "MIT"
 version = "0.2.0"
 edition = "2024"
@@ -27,7 +27,15 @@ rand = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tray-icon = "0.26.1"
+
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_Security"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
 [build-dependencies]
 winresource = "0.1.34"

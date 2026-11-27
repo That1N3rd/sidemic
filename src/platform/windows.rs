@@ -1,4 +1,4 @@
-//! Thin Windows helpers: console attach, process check, message pump, message box, shell commands.
+//! Windows helpers: console attach, process check, message pump, message box, shell commands.
 
 use std::process::Command;
 use std::ptr::{null, null_mut};
@@ -171,3 +171,21 @@ pub fn autostart_enabled() -> bool {
         .map(|a| std::path::Path::new(&format!(r"{a}\Microsoft\Windows\Start Menu\Programs\Startup\SideMic.lnk")).exists())
         .unwrap_or(false)
 }
+
+// ---- wording and hooks the shared code uses; macos.rs has the Mac versions ----
+
+/// Appended to the Moonlight process name in the UI ("Moonlight" + ".exe").
+pub const EXE_SUFFIX: &str = ".exe";
+/// Label of the autostart checkbox.
+pub const AUTOSTART_LABEL: &str = "Start with Windows";
+/// Where the tray icon lives, for user-facing text.
+pub const TRAY_NAME: &str = "system tray";
+/// Label of the host's firewall button.
+pub const FIREWALL_LABEL: &str = "Allow UDP port through Windows Firewall";
+/// What to check when the microphone delivers nothing but digital silence.
+pub const MIC_PERMISSION_HINT: &str = "check Settings > Privacy & security > Microphone";
+
+/// Called when the settings window appears / disappears. Nothing to do on Windows.
+#[allow(dead_code)] // only the macOS window code calls this
+pub fn on_window_shown() {}
+pub fn on_window_hidden() {}

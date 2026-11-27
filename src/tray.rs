@@ -1,10 +1,15 @@
-//! System-tray icon. Lives on the main thread. While the settings window is open, eframe's event loop pumps
-//! its messages and `App::update` calls `Tray::poll`; while the window is closed, `Tray::idle_loop` pumps.
+//! System-tray / menu-bar icon. Lives on the main thread.
+//! Windows: while the settings window is open, eframe's event loop pumps its messages and `App::logic` calls
+//! `Tray::poll`; while the window is closed, `Tray::idle_loop` pumps.
+//! macOS: the eframe event loop runs for the whole life of the app (the window is hidden, not closed), so
+//! `App::logic` is the only caller of `Tray::poll`.
 
 use crate::state::Shared;
-use crate::{log, win};
+use crate::{log, platform};
 use std::sync::Arc;
+#[cfg(windows)]
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -47,11 +52,38 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     rgba
 }
 
+/// Black microphone on transparent, for the macOS menu bar. Marked as a template image, so macOS recolours it
+/// for light/dark menu bars like every other menu-bar icon.
+#[cfg(target_os = "macos")]
+fn template_rgba(size: u32) -> Vec<u8> {
+    // Reuse the coloured glyph: its white pixels are the microphone shape.
+    icon_rgba(size)
+        .chunks_exact(4)
+        .flat_map(|p| if p == [255, 255, 255, 255] { [0, 0, 0, 255] } else { [0, 0, 0, 0] })
+        .collect()
+}
+
+#[cfg(windows)]
 fn load_icon() -> Icon {
     if let Ok(i) = Icon::from_resource(1, Some((32, 32))) {
         return i;
     }
     Icon::from_rgba(icon_rgba(32), 32, 32).expect("fallback icon")
+}
+
+#[cfg(target_os = "macos")]
+fn load_icon() -> Icon {
+    // 36 px = 18 pt menu-bar height on a Retina screen. The glyph is drawn larger than the disc it normally sits
+    // in, so scale it up by rendering at a bigger size and cropping the middle.
+    let (big, out) = (54u32, 36u32);
+    let src = template_rgba(big);
+    let off = (big - out) / 2;
+    let mut rgba = Vec::with_capacity((out * out * 4) as usize);
+    for y in 0..out {
+        let row = ((y + off) * big + off) as usize * 4;
+        rgba.extend_from_slice(&src[row..row + out as usize * 4]);
+    }
+    Icon::from_rgba(rgba, out, out).expect("menu bar icon")
 }
 
 pub struct Tray {
@@ -64,6 +96,8 @@ pub struct Tray {
     key_item: MenuItem,
     log_item: MenuItem,
     exit_item: MenuItem,
+    menu_rx: Receiver<MenuEvent>,
+    tray_rx: Receiver<TrayIconEvent>,
     last_tick: Instant,
 }
 
@@ -75,7 +109,7 @@ impl Tray {
         let mute_item = CheckMenuItem::new("Mute microphone", false, false, None);
         let key_item = MenuItem::new("Copy pairing key", false, None);
         let log_item = MenuItem::new("Open log", true, None);
-        let exit_item = MenuItem::new("Exit", true, None);
+        let exit_item = MenuItem::new(if cfg!(target_os = "macos") { "Quit SideMic" } else { "Exit" }, true, None);
         let _ = menu.append(&status_item);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&open_item);
@@ -85,12 +119,27 @@ impl Tray {
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&exit_item);
 
-        let tray = match TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_tooltip(format!("SideMic - {}", shared.status()))
-            .with_icon(load_icon())
-            .build()
-        {
+        // Forward tray events into our own channels and poke the GUI thread, so a click is handled right away
+        // even while the window is hidden and egui is only ticking slowly.
+        let (menu_tx, menu_rx) = channel();
+        let (tray_tx, tray_rx) = channel();
+        let s1 = shared.clone();
+        MenuEvent::set_event_handler(Some(move |e| {
+            let _ = menu_tx.send(e);
+            s1.wake();
+        }));
+        let s2 = shared.clone();
+        TrayIconEvent::set_event_handler(Some(move |e| {
+            let _ = tray_tx.send(e);
+            s2.wake();
+        }));
+
+        let builder = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(format!("SideMic - {}", shared.status()));
+        #[cfg(windows)]
+        let builder = builder.with_icon(load_icon());
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(load_icon());
+        let tray = match builder.build() {
             Ok(t) => t,
             Err(e) => {
                 log::error(format!("Could not create tray icon: {e}"));
@@ -107,6 +156,8 @@ impl Tray {
             key_item,
             log_item,
             exit_item,
+            menu_rx,
+            tray_rx,
             last_tick: Instant::now() - Duration::from_secs(2),
         })
     }
@@ -114,30 +165,30 @@ impl Tray {
     /// Handles pending menu/tray events and refreshes the tooltip once a second. Call often.
     pub fn poll(&mut self) {
         let shared = &self.shared;
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+        while let Ok(ev) = self.menu_rx.try_recv() {
             if ev.id() == self.exit_item.id() {
                 shared.request_exit();
             } else if ev.id() == self.open_item.id() {
                 shared.request_show();
             } else if ev.id() == self.log_item.id() {
                 match log::file_path() {
-                    Some(p) => win::open_path(&p.display().to_string()),
-                    None => win::message_box(&log::recent_text()),
+                    Some(p) => platform::open_path(&p.display().to_string()),
+                    None => platform::message_box(&log::recent_text()),
                 }
             } else if ev.id() == self.key_item.id() {
                 let key = shared.pairing_key();
                 if !key.is_empty() {
-                    if win::set_clipboard(&key) {
-                        win::message_box("Pairing key copied to the clipboard.\n\nPaste it into SideMic on the laptop.");
+                    if platform::set_clipboard(&key) {
+                        platform::message_box("Pairing key copied to the clipboard.\n\nPaste it into SideMic on the laptop.");
                     } else {
-                        win::message_box(&format!("Could not copy to the clipboard. Pairing key:\n\n{key}"));
+                        platform::message_box(&format!("Could not copy to the clipboard. Pairing key:\n\n{key}"));
                     }
                 }
             } else if ev.id() == self.mute_item.id() {
                 shared.set_muted(self.mute_item.is_checked());
             }
         }
-        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+        while let Ok(ev) = self.tray_rx.try_recv() {
             if let TrayIconEvent::DoubleClick { .. } = ev {
                 shared.request_show();
             }
@@ -157,9 +208,11 @@ impl Tray {
     }
 
     /// Pumps messages while the window is closed. Returns when the window should open or the app should exit.
+    /// Windows only; on macOS the eframe loop never stops.
+    #[cfg(windows)]
     pub fn idle_loop(&mut self) {
         loop {
-            win::pump_messages();
+            platform::pump_messages();
             self.poll();
             if self.shared.exit.load(Ordering::SeqCst) || self.shared.show_window.load(Ordering::SeqCst) {
                 return;

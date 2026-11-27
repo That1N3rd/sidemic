@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Unit tests
+        run: cargo test
+      - name: Build SideMic.app (universal)
+        run: macos/build-app.sh --universal
+      - name: Smoke test
+        run: |
+          app=target/universal/SideMic.app
+          lipo -info "$app/Contents/MacOS/sidemic"
+          codesign --verify --deep --strict "$app"
+          plutil -lint "$app/Contents/Info.plist"
+          "$app/Contents/MacOS/sidemic" help
+          "$app/Contents/MacOS/sidemic" devices
+      - name: Zip
+        run: ditto -c -k --keepParent target/universal/SideMic.app SideMic-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SideMic-macos
+          path: SideMic-macos.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unit tests
+        run: cargo test
+      - name: Build
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SideMic-windows
+          path: target/release/sidemic.exe

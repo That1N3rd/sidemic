@@ -12,11 +12,12 @@ mod log;
 mod protocol;
 mod state;
 mod tray;
-mod win;
+mod platform;
 
 use config::Config;
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -47,6 +48,22 @@ Options:
 
 Settings are saved to sidemic.json next to the exe.
 ";
+
+/// USAGE with the Mac names for things. Kept as substitutions so there is one help text to maintain.
+fn usage() -> String {
+    if !cfg!(target_os = "macos") {
+        return USAGE.to_string();
+    }
+    USAGE
+        .replace("Just run sidemic.exe to open", "Just open SideMic.app (or run sidemic) to open")
+        .replace("Allow UDP port in firewall:     sidemic firewall        (host only, asks for admin)",
+                 "Allow in the macOS firewall:    sidemic firewall        (host only, asks for admin)")
+        .replace("Start with Windows:             sidemic autostart", "Open at login:                  sidemic autostart")
+        .replace("\"CABLE Input\"", "\"BlackHole 2ch\"")
+        .replace("Windows default mic", "system default mic")
+        .replace("Moonlight.exe runs", "Moonlight runs")
+        .replace("sidemic.json next to the exe", "~/Library/Application Support/SideMic/sidemic.json")
+}
 
 struct Args {
     verb: String,
@@ -84,7 +101,7 @@ fn show(text: &str, console: bool) {
     if console {
         println!("{text}");
     } else {
-        win::message_box(text);
+        platform::message_box(text);
     }
 }
 
@@ -95,10 +112,10 @@ fn main() {
 fn run() -> i32 {
     let Args { verb, opts } = parse_args();
     let console = opts.contains_key("console") || verb == "devices" || verb == "help";
-    let console = if console { win::enable_console() } else { false };
+    let console = if console { platform::enable_console() } else { false };
 
     if verb == "help" || opts.contains_key("help") || opts.contains_key("h") || opts.contains_key("?") {
-        show(USAGE, console);
+        show(&usage(), console);
         return 0;
     }
 
@@ -159,7 +176,7 @@ fn run() -> i32 {
     }
 
     if verb == "firewall" {
-        return match win::add_firewall_rule(cfg.port) {
+        return match platform::add_firewall_rule(cfg.port) {
             Ok(()) => {
                 show(&format!("Firewall rule added for UDP {}.", cfg.port), console);
                 0
@@ -172,13 +189,13 @@ fn run() -> i32 {
     }
     if verb == "autostart" {
         let enable = !opts.contains_key("remove");
-        return match win::set_autostart(enable) {
+        return match platform::set_autostart(enable) {
             Ok(lnk) if enable => {
-                show(&format!("SideMic will start with Windows (in the tray) using the saved settings.\n\nShortcut: {lnk}"), console);
+                show(&format!("SideMic will start at login (in the {}) using the saved settings.\n\nCreated: {lnk}", platform::TRAY_NAME), console);
                 0
             }
             Ok(_) => {
-                show("SideMic will no longer start with Windows.", console);
+                show("SideMic will no longer start at login.", console);
                 0
             }
             Err(e) => {
@@ -202,7 +219,7 @@ fn run() -> i32 {
     // ---- console mode: no tray, no window ----
     if console {
         if !configured {
-            show(&format!("Not set up yet.\n\n{USAGE}"), true);
+            show(&format!("Not set up yet.\n\n{}", usage()), true);
             return 2;
         }
         let shared = state::Shared::new(cfg.clone());
@@ -216,9 +233,9 @@ fn run() -> i32 {
             println!("Pairing key (give this to the laptop): {}", cfg.key);
         }
         println!("Press Ctrl+C to stop.");
-        win::install_ctrl_c_handler();
+        platform::install_ctrl_c_handler();
         let mut last = String::new();
-        while !win::ctrl_c_pressed() {
+        while !platform::ctrl_c_pressed() {
             std::thread::sleep(Duration::from_secs(1));
             let s = shared.status();
             if s != last {
@@ -231,8 +248,8 @@ fn run() -> i32 {
     }
 
     // ---- normal mode: tray always, window on demand ----
-    if !win::claim_single_instance("app") {
-        show("SideMic is already running - look for it in the system tray (double-click to open the window).", false);
+    if !platform::claim_single_instance("app") {
+        show(ALREADY_RUNNING, false);
         return 1;
     }
     if cfg.mode == "host" {
@@ -242,16 +259,35 @@ fn run() -> i32 {
     if configured {
         shared.start_logged();
     }
+
+    // Open the window unless told to stay in the tray (autostart shortcut) or launched with a verb.
+    let show_window = !configured || (!opts.contains_key("minimized") && verb.is_empty());
+
+    #[cfg(target_os = "macos")]
+    {
+        let ok = gui::run_app(shared.clone(), !show_window);
+        shared.stop();
+        return if ok { 0 } else { 1 };
+    }
+
+    #[cfg(windows)]
+    {
+        windows_tray_loop(shared, show_window)
+    }
+}
+
+#[cfg(windows)]
+const ALREADY_RUNNING: &str = "SideMic is already running - look for it in the system tray (double-click to open the window).";
+#[cfg(target_os = "macos")]
+const ALREADY_RUNNING: &str = "SideMic is already running - look for the microphone icon in the menu bar.";
+
+/// Windows: the tray icon pumps its own messages while the window is closed; the window runs eframe on demand.
+#[cfg(windows)]
+fn windows_tray_loop(shared: std::sync::Arc<state::Shared>, mut show_window: bool) -> i32 {
     let Some(mut tray) = tray::Tray::new(shared.clone()) else {
         show("SideMic could not create its tray icon.", false);
         return 1;
     };
-
-    // Open the window unless told to stay in the tray (autostart shortcut) or launched with a verb.
-    let mut show_window = !opts.contains_key("minimized") && verb.is_empty();
-    if !configured {
-        show_window = true;
-    }
     loop {
         if show_window {
             gui::run_window(shared.clone(), &mut tray);
